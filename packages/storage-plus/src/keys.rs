@@ -1,6 +1,7 @@
 use cosmwasm_std::{Addr, Timestamp};
 use std::marker::PhantomData;
 
+use crate::de::Deserializable;
 use crate::helpers::namespaces_with_key;
 use crate::Endian;
 
@@ -8,6 +9,9 @@ use crate::Endian;
 pub trait PrimaryKey<'a>: Clone {
     type Prefix: Prefixer<'a>;
     type SubPrefix: Prefixer<'a>;
+
+    type Suffix: Deserializable;
+    type SuperSuffix: Deserializable;
 
     /// returns a slice of key steps, which can be optionally combined
     fn key(&self) -> Vec<&[u8]>;
@@ -21,8 +25,10 @@ pub trait PrimaryKey<'a>: Clone {
 
 // Empty / no primary key
 impl<'a> PrimaryKey<'a> for () {
-    type Prefix = ();
-    type SubPrefix = ();
+    type Prefix = Self;
+    type SubPrefix = Self;
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         vec![]
@@ -32,6 +38,8 @@ impl<'a> PrimaryKey<'a> for () {
 impl<'a> PrimaryKey<'a> for &'a [u8] {
     type Prefix = ();
     type SubPrefix = ();
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         // this is simple, we don't add more prefixes
@@ -43,6 +51,8 @@ impl<'a> PrimaryKey<'a> for &'a [u8] {
 impl<'a> PrimaryKey<'a> for &'a str {
     type Prefix = ();
     type SubPrefix = ();
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         // this is simple, we don't add more prefixes
@@ -51,9 +61,13 @@ impl<'a> PrimaryKey<'a> for &'a str {
 }
 
 // use generics for combining there - so we can use &[u8], Vec<u8>, or IntKey
-impl<'a, T: PrimaryKey<'a> + Prefixer<'a>, U: PrimaryKey<'a>> PrimaryKey<'a> for (T, U) {
+impl<'a, T: PrimaryKey<'a> + Prefixer<'a> + Deserializable, U: PrimaryKey<'a> + Deserializable>
+    PrimaryKey<'a> for (T, U)
+{
     type Prefix = T;
     type SubPrefix = ();
+    type Suffix = U;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         let mut keys = self.0.key();
@@ -63,11 +77,17 @@ impl<'a, T: PrimaryKey<'a> + Prefixer<'a>, U: PrimaryKey<'a>> PrimaryKey<'a> for
 }
 
 // use generics for combining there - so we can use &[u8], Vec<u8>, or IntKey
-impl<'a, T: PrimaryKey<'a> + Prefixer<'a>, U: PrimaryKey<'a> + Prefixer<'a>, V: PrimaryKey<'a>>
-    PrimaryKey<'a> for (T, U, V)
+impl<
+        'a,
+        T: PrimaryKey<'a> + Prefixer<'a>,
+        U: PrimaryKey<'a> + Prefixer<'a> + Deserializable,
+        V: PrimaryKey<'a> + Deserializable,
+    > PrimaryKey<'a> for (T, U, V)
 {
     type Prefix = (T, U);
     type SubPrefix = T;
+    type Suffix = V;
+    type SuperSuffix = (U, V);
 
     fn key(&self) -> Vec<&[u8]> {
         let mut keys = self.0.key();
@@ -77,9 +97,8 @@ impl<'a, T: PrimaryKey<'a> + Prefixer<'a>, U: PrimaryKey<'a> + Prefixer<'a>, V: 
     }
 }
 
-// pub trait Prefixer<'a>: Copy {
 pub trait Prefixer<'a> {
-    /// returns 0 or more namespaces that should length-prefixed and concatenated for range searches
+    /// returns 0 or more namespaces that should be length-prefixed and concatenated for range searches
     fn prefix(&self) -> Vec<&[u8]>;
 
     fn joined_prefix(&self) -> Vec<u8> {
@@ -127,6 +146,8 @@ impl<'a> Prefixer<'a> for &'a str {
 impl<'a> PrimaryKey<'a> for Vec<u8> {
     type Prefix = ();
     type SubPrefix = ();
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         vec![&self]
@@ -142,6 +163,8 @@ impl<'a> Prefixer<'a> for Vec<u8> {
 impl<'a> PrimaryKey<'a> for String {
     type Prefix = ();
     type SubPrefix = ();
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         vec![self.as_bytes()]
@@ -158,6 +181,8 @@ impl<'a> Prefixer<'a> for String {
 impl<'a> PrimaryKey<'a> for &'a Addr {
     type Prefix = ();
     type SubPrefix = ();
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         // this is simple, we don't add more prefixes
@@ -175,6 +200,8 @@ impl<'a> Prefixer<'a> for &'a Addr {
 impl<'a> PrimaryKey<'a> for Addr {
     type Prefix = ();
     type SubPrefix = ();
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         // this is simple, we don't add more prefixes
@@ -189,9 +216,14 @@ impl<'a> Prefixer<'a> for Addr {
 }
 
 // this auto-implements PrimaryKey for all the IntKey types
-impl<'a, T: Endian + Clone> PrimaryKey<'a> for IntKey<T> {
+impl<'a, T: Endian + Clone> PrimaryKey<'a> for IntKey<T>
+where
+    IntKey<T>: Deserializable,
+{
     type Prefix = ();
     type SubPrefix = ();
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         self.wrapped.key()
@@ -273,6 +305,8 @@ impl TimestampKey {
 impl<'a> PrimaryKey<'a> for TimestampKey {
     type Prefix = ();
     type SubPrefix = ();
+    type Suffix = Self;
+    type SuperSuffix = Self;
 
     fn key(&self) -> Vec<&[u8]> {
         self.0.key()

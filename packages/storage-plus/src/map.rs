@@ -116,18 +116,14 @@ where
 impl<'a, K, T> Map<'a, K, T>
 where
     T: Serialize + DeserializeOwned,
-    K: PrimaryKey<'a> + Deserializable,
+    K: PrimaryKey<'a>,
 {
-    pub fn sub_prefix_de(&self, p: K::SubPrefix) -> Prefix2<K, T> {
+    pub fn sub_prefix_de(&self, p: K::SubPrefix) -> Prefix2<K::SuperSuffix, T> {
         Prefix2::new(self.namespace, &p.prefix())
     }
 
-    pub fn prefix_de(&self, p: K::Prefix) -> Prefix2<K, T> {
+    pub fn prefix_de(&self, p: K::Prefix) -> Prefix2<K::Suffix, T> {
         Prefix2::new(self.namespace, &p.prefix())
-    }
-
-    fn no_prefix_de(&self) -> Prefix2<K, T> {
-        Prefix2::new(self.namespace, &[])
     }
 }
 
@@ -220,6 +216,10 @@ where
     {
         self.no_prefix_de().keys_de(store, min, max, order)
     }
+
+    fn no_prefix_de(&self) -> Prefix2<K, T> {
+        Prefix2::new(self.namespace, &[])
+    }
 }
 
 #[cfg(test)]
@@ -228,8 +228,6 @@ mod test {
     use serde::{Deserialize, Serialize};
     use std::ops::Deref;
 
-    #[cfg(feature = "iterator")]
-    use crate::iter_helpers::to_length_prefixed;
     #[cfg(feature = "iterator")]
     use crate::U32Key;
     use crate::U8Key;
@@ -629,6 +627,18 @@ mod test {
                 ((b"owner2".to_vec(), b"spender".to_vec()), 5000)
             ]
         );
+
+        // let's try to iterate over a prefix_de
+        let all: StdResult<Vec<_>> = ALLOWANCE
+            .prefix_de(b"owner")
+            .range_de(&store, None, None, Order::Ascending)
+            .collect();
+        let all = all.unwrap();
+        assert_eq!(2, all.len());
+        assert_eq!(
+            all,
+            vec![(b"spender".to_vec(), 1000), (b"spender2".to_vec(), 3000),]
+        );
     }
 
     #[test]
@@ -698,22 +708,13 @@ mod test {
             .collect();
         let all = all.unwrap();
         assert_eq!(3, all.len());
-        // FIXME: range() works, but remaining keys are still encoded
+        // Use range_de() if you want key deserialization
         assert_eq!(
             all,
             vec![
-                (
-                    [to_length_prefixed(b"\x09"), b"recipient".to_vec()].concat(),
-                    1000
-                ),
-                (
-                    [to_length_prefixed(b"\x09"), b"recipient2".to_vec()].concat(),
-                    3000
-                ),
-                (
-                    [to_length_prefixed(b"\x0a"), b"recipient3".to_vec()].concat(),
-                    3000
-                )
+                ((U8Key::new(9), b"recipient".to_vec()).joined_key(), 1000),
+                ((U8Key::new(9), b"recipient2".to_vec()).joined_key(), 3000),
+                ((U8Key::new(10), b"recipient3".to_vec()).joined_key(), 3000)
             ]
         );
     }
@@ -750,6 +751,37 @@ mod test {
                 ((b"owner".to_vec(), 9, "recipient2".to_string()), 3000),
                 ((b"owner".to_vec(), 10, "recipient3".to_string()), 3000),
                 ((b"owner2".to_vec(), 9, "recipient".to_string()), 5000)
+            ]
+        );
+
+        // let's iterate over a sub_prefix_de
+        let all: StdResult<Vec<_>> = TRIPLE
+            .sub_prefix_de(b"owner")
+            .range_de(&store, None, None, Order::Ascending)
+            .collect();
+        let all = all.unwrap();
+        assert_eq!(3, all.len());
+        assert_eq!(
+            all,
+            vec![
+                ((9, "recipient".to_string()), 1000),
+                ((9, "recipient2".to_string()), 3000),
+                ((10, "recipient3".to_string()), 3000),
+            ]
+        );
+
+        // let's iterate over a prefix_de
+        let all: StdResult<Vec<_>> = TRIPLE
+            .prefix_de((b"owner", U8Key::new(9)))
+            .range_de(&store, None, None, Order::Ascending)
+            .collect();
+        let all = all.unwrap();
+        assert_eq!(2, all.len());
+        assert_eq!(
+            all,
+            vec![
+                ("recipient".to_string(), 1000),
+                ("recipient2".to_string(), 3000),
             ]
         );
     }
